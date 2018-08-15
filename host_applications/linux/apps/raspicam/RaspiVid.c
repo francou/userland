@@ -232,6 +232,7 @@ struct RASPIVID_STATE_S
    int save_pts;
    int64_t starttime;
    int64_t lasttime;
+   int64_t ts_delta;
 
    bool netListen;
 };
@@ -439,6 +440,8 @@ static void default_status(RASPIVID_STATE *state)
 
    state->frame = 0;
    state->save_pts = 0;
+   
+   state->ts_delta = 0;
 
    state->netListen = false;
 
@@ -1467,6 +1470,7 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
 
                if(pData->pstate->save_pts &&
                   (buffer->flags & MMAL_BUFFER_HEADER_FLAG_FRAME_END ||
+                   buffer->flags & MMAL_BUFFER_HEADER_FLAG_NAL_END ||
                    buffer->flags == 0 ||
                    buffer->flags & MMAL_BUFFER_HEADER_FLAG_KEYFRAME) &&
                   !(buffer->flags & MMAL_BUFFER_HEADER_FLAG_CONFIG))
@@ -1476,8 +1480,8 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
                     int64_t pts;
                     if(pData->pstate->frame==0)pData->pstate->starttime=buffer->pts;
                     pData->pstate->lasttime=buffer->pts;
-                    pts = buffer->pts - pData->pstate->starttime;
-                    fprintf(pData->pts_file_handle,"%lld.%03lld\n", pts/1000, pts%1000);
+                    pts = buffer->pts + pData->pstate->ts_delta;
+                    fprintf(pData->pts_file_handle,"%lld\n", pts);
                     pData->pstate->frame++;
                   }
                }
@@ -1600,6 +1604,21 @@ static MMAL_STATUS_T create_camera_component(RASPIVID_STATE *state)
 
    /* Create the component */
    status = mmal_component_create(MMAL_COMPONENT_DEFAULT_CAMERA, &camera);
+
+   if (status != MMAL_SUCCESS)
+   {
+      vcos_log_error("Failed to create camera component");
+      goto error;
+   }
+
+   /* Get timestamp delta */
+   uint64_t gpu_ts, timestamp;
+   struct timespec ts;
+   status = mmal_port_parameter_get_uint64(camera->control, MMAL_PARAMETER_SYSTEM_TIME, &gpu_ts);
+   clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+   timestamp = ts.tv_sec * (uint64_t) 1e9 + ts.tv_nsec;
+   state->ts_delta = timestamp - gpu_ts * 1000;
+   printf("\x1b[31mcpu: %llu gpu: %llu delta: %lld\x1b[0m\n", timestamp, gpu_ts*1000, state->ts_delta);
 
    if (status != MMAL_SUCCESS)
    {
